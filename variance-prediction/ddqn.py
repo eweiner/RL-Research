@@ -15,7 +15,7 @@ import torchvision.utils as vutils
 from random import random
 from collections import deque, namedtuple
 from gan import GAN1d, train_gan
-
+from prioritized_memory import Memory
 
 class Trajectory:
     def __init__(self, gamma: float):
@@ -120,7 +120,6 @@ class SimpleEstimator(nn.Module):
     def forward(self, obs: torch.FloatTensor):
         return self.predict(obs)
 
-
 def train_ddqn(
     env: gym.Env,
     valid_actions: list,
@@ -196,7 +195,6 @@ def train_ddqn(
     env.close()
     return losses
 
-
 def train_ddqn_and_gan(
     env: gym.Env,
     valid_actions: list,
@@ -211,7 +209,7 @@ def train_ddqn_and_gan(
 ):
     # TODO: Fix typing in file
     # TODO: Note: this probably isn't the right place for this function
-    rb = ReplayBuffer(buffer_size)
+    per_memory = Memory(buffer_size)
     epsilon = 1.0
     observation = env.reset()
     criterion = nn.MSELoss()
@@ -246,7 +244,7 @@ def train_ddqn_and_gan(
         )
 
         if done:
-            rb.add_trajectory(trajectory)
+            per_memory.add_trajectory(q_est, q_target, trajectory)
             # Measure/record accuracy stuff here
             if frames_since_accuracy_check > 500:
                 frames_since_accuracy_check = 0
@@ -273,7 +271,14 @@ def train_ddqn_and_gan(
         if (frame + 1) % batch_size == 0 and frame > 2 * batch_size:
             q_est.zero_grad()
             # Sample the things you need from the buffer!
-            obs, actions, obs_p, rews, done = rb.sample(batch_size)
+            mini_batch, idxs, is_weights = per_memory.sample(batch_size)
+            mini_batch = np.array(mini_batch).transpose()
+
+            obs = np.vstack(mini_batch[0])
+            actions = list(mini_batch[1])
+            rews = list(mini_batch[2])
+            obs_p = np.vstack(mini_batch[3])
+            done = mini_batch[4]
 
             # TRAIN THE GAN <('_'<)
             generator_loss, discriminator_loss = train_gan(
@@ -288,7 +293,14 @@ def train_ddqn_and_gan(
             # Find MSE between target and network
             q_target_pred = q_target(obs_p).gather(1, max_actions.unsqueeze(1))
             target = rews.unsqueeze(1) + (1 - done.unsqueeze(1)) * gamma * q_target_pred
-            prediction = q_est(obs)[actions]
+            prediction = q_est(obs).gather(1, max_actions.unsqueeze(1))
+            errors = torch.abs(prediction - target).numpy()
+
+            # Update priority
+            for i in range(batch_size):
+                idx = idxs[i]
+                per_memory.update(idx, errors[i])
+
             loss = criterion(target, prediction)
             ddqn_losses.append(float(loss))
             if float(loss) < min_loss:
