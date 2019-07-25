@@ -29,17 +29,17 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, out_dim):
+    def __init__(self, out_dim, hidden_size):
         super(Discriminator, self).__init__()
         self.out_dim = out_dim
         self.main = nn.Sequential(
-            nn.Linear(out_dim, 10 * out_dim),
+            nn.Linear(out_dim, hidden_size),
             nn.ReLU(),
-            nn.Linear(out_dim * 10, out_dim * 10),
+            nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(out_dim * 10, out_dim * 10),
+            nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(10 * out_dim, 2),
+            nn.Linear(hidden_size, 2),
             nn.Softmax(dim=1),
         )
 
@@ -48,12 +48,12 @@ class Discriminator(nn.Module):
 
 
 class GAN1d(nn.Module):
-    def __init__(self, latent_dim, out_dim):
+    def __init__(self, latent_dim, out_dim, hidden_size):
         super(GAN1d, self).__init__()
         self.latent_dim = latent_dim
         self.out_dim = out_dim
         self.generator = Generator(latent_dim, out_dim)
-        self.discriminator = Discriminator(out_dim)
+        self.discriminator = Discriminator(out_dim, hidden_size)
 
     def _create_loss_and_optimizer(self, net, learning_rate=0.001):
 
@@ -95,10 +95,11 @@ def train_gan(
     freeze_generator: bool = False,
 ) -> tuple:
     criterion = torch.nn.BCELoss()
-    optimizerD = optim.Adam(gan.discriminator.parameters(), lr=0.001)
-    optimizerG = optim.Adam(gan.generator.parameters(), lr=0.0001)
+    optimizerD = optim.Adam(gan.discriminator.parameters(), lr=0.0001)
+    optimizerG = optim.Adam(gan.generator.parameters(), lr=0.00001)
     g_losses = []
     d_losses = []
+    x_train = x_train.reshape(1, x_train.shape[1], -1)
     for e in range(epochs):
         for batch in x_train:
             ############################
