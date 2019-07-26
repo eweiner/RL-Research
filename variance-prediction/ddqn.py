@@ -271,14 +271,22 @@ def train_ddqn_and_gan(
         if (frame + 1) % batch_size == 0 and frame > 2 * batch_size:
             q_est.zero_grad()
             # Sample the things you need from the buffer!
-            mini_batch, idxs, is_weights = per_memory.sample(batch_size)
-            mini_batch = np.array(mini_batch).transpose()
+            mini_batch_p, idxs, is_weights = per_memory.sample(batch_size)
+            # print("before transpose:", mini_batch_p[0], "shape", np.array(mini_batch_p).shape)
+            mini_batch = np.array(mini_batch_p).transpose()
+            # print("after transpose", mini_batch[0], "shape", mini_batch.shape)
+            equal = np.array_equal(mini_batch, mini_batch_p)
+            # print("equal:", np.array_equal(mini_batch, mini_batch_p))
 
-            obs = np.vstack(mini_batch[0])
-            actions = list(mini_batch[1])
-            rews = list(mini_batch[2])
-            obs_p = np.vstack(mini_batch[3])
-            done = mini_batch[4]
+            # Skip mini batches that fail transpose
+            if equal:
+                continue
+
+            obs = torch.FloatTensor(np.vstack(mini_batch[0]))
+            actions = torch.LongTensor(list(mini_batch[1]))
+            rews = torch.FloatTensor(list(mini_batch[2]))
+            obs_p = torch.FloatTensor(np.vstack(mini_batch[3]))
+            done = torch.FloatTensor(list(mini_batch[4]))
 
             # TRAIN THE GAN <('_'<)
             generator_loss, discriminator_loss = train_gan(
@@ -294,7 +302,7 @@ def train_ddqn_and_gan(
             q_target_pred = q_target(obs_p).gather(1, max_actions.unsqueeze(1))
             target = rews.unsqueeze(1) + (1 - done.unsqueeze(1)) * gamma * q_target_pred
             prediction = q_est(obs).gather(1, max_actions.unsqueeze(1))
-            errors = torch.abs(prediction - target).numpy()
+            errors = np.abs(np.array(prediction.tolist()) - np.array(target.tolist()))
 
             # Update priority
             for i in range(batch_size):

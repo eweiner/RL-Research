@@ -41,6 +41,7 @@ class Memory:  # stored as ( s, a, r, s_ ) in SumTree
             batch.append(data)
             idxs.append(idx)
 
+        priorities = np.array(list(map(lambda x: self.e if x == 0 else x, priorities)))
         sampling_probabilities = priorities / self.tree.total()
         is_weight = np.power(self.tree.n_entries * sampling_probabilities, -self.beta)
         is_weight /= is_weight.max()
@@ -61,20 +62,15 @@ class Memory:  # stored as ( s, a, r, s_ ) in SumTree
             done = trajectory.done[i]
 
             target = model_est(Variable(torch.FloatTensor(obs))).data
-            # print('obs', obs)
-            # print('target', target)
-            # print('target[0]', target[0])
 
             old_val = target[action]
             target_val = model_target(Variable(torch.FloatTensor(obs_prime))).data
-            # print('target', target)
             if done:
                 target[action] = reward
             else:
                 target[action] = reward + trajectory.gamma * torch.max(target_val)
 
             error = abs(old_val - target[action])
-
             self.add(error, (obs, action, reward, obs_prime, done))
 
 
