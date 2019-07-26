@@ -16,7 +16,7 @@ import time
 from random import random
 from collections import deque, namedtuple
 from gan import GAN1d, train_gan
-
+from prioritized_memory import Memory
 
 class Trajectory:
     def __init__(self, gamma: float):
@@ -122,7 +122,7 @@ class SimpleEstimator(nn.Module):
 
     def forward(self, obs: torch.FloatTensor):
         return self.predict(obs)
-
+      
 
 class Conv1dEstimator(nn.Module):
     def __init__(self, action_dim: int, obs_size: int, hidden_size: int, in_channels : int, out_channels : int, kernel_size : int):
@@ -274,7 +274,7 @@ def train_ddqn_and_gan(
 ):
     # TODO: Fix typing in file
     # TODO: Note: this probably isn't the right place for this function
-    rb = ReplayBuffer(buffer_size)
+    per_memory = Memory(buffer_size)
     epsilon = epsilon_start
     observation = env.reset()
     criterion = nn.MSELoss()
@@ -315,7 +315,7 @@ def train_ddqn_and_gan(
         )
 
         if done:
-            rb.add_trajectory(trajectory)
+            per_memory.add_trajectory(q_est, q_target, trajectory)
             # Measure/record accuracy stuff here
             # if frames_since_accuracy_check > 500:
             #     frames_since_accuracy_check = 0
@@ -343,7 +343,22 @@ def train_ddqn_and_gan(
             #start = time.time()
             q_est.zero_grad()
             # Sample the things you need from the buffer!
-            obs, actions, obs_p, rews, done = rb.sample(batch_size)
+            mini_batch_p, idxs, is_weights = per_memory.sample(batch_size)
+            # print("before transpose:", mini_batch_p[0], "shape", np.array(mini_batch_p).shape)
+            mini_batch = np.array(mini_batch_p).transpose()
+            # print("after transpose", mini_batch[0], "shape", mini_batch.shape)
+            equal = np.array_equal(mini_batch, mini_batch_p)
+            # print("equal:", np.array_equal(mini_batch, mini_batch_p))
+
+            # Skip mini batches that fail transpose
+            if equal:
+                continue
+
+            obs = torch.FloatTensor(np.vstack(mini_batch[0]))
+            actions = torch.LongTensor(list(mini_batch[1]))
+            rews = torch.FloatTensor(list(mini_batch[2]))
+            obs_p = torch.FloatTensor(np.vstack(mini_batch[3]))
+            done = torch.FloatTensor(list(mini_batch[4]))
 
             # TRAIN THE GAN <('_'<)
             generator_loss, discriminator_loss = train_gan(
@@ -359,6 +374,13 @@ def train_ddqn_and_gan(
             q_target_pred = q_target(obs_p).gather(1, max_actions.unsqueeze(1))
             target = rews.unsqueeze(1) + (1 - done.unsqueeze(1)) * gamma * q_target_pred
             prediction = q_est(obs).gather(1, actions.unsqueeze(1))
+            errors = np.abs(np.array(prediction.tolist()) - np.array(target.tolist()))
+
+            # Update priority
+            for i in range(batch_size):
+                idx = idxs[i]
+                per_memory.update(idx, errors[i])
+
             loss = criterion(target, prediction)
             ddqn_losses.append(float(loss))
             #if float(loss) < min_loss:
