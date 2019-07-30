@@ -42,9 +42,9 @@ class Trajectory:
         done: bool,
         q_val: float,
     ):
-        self.obs.append(obs)
+        self.obs.append(copy.deepcopy(obs))
         self.actions.append(action)
-        self.obs_p.append(obs_p)
+        self.obs_p.append(copy.deepcopy(obs_p))
         self.rewards.append(reward)
         self.done.append(done)
         self.q_vals.append(q_val)
@@ -91,8 +91,8 @@ class ReplayBuffer:
         if self.length > self.buffer_len:
             self.length = self.buffer_len
 
-    def sample(self, batch_size : int):
-        perm = np.random.choice(self.length, batch_size)
+    def sample(self, batch_size: int):
+        perm = torch.LongTensor(np.random.choice(self.length, batch_size))
         return (
             torch.FloatTensor(self.obs_buffer)[perm],
             torch.LongTensor(self.actions_buffer)[perm],
@@ -100,7 +100,6 @@ class ReplayBuffer:
             torch.FloatTensor(self.reward_buffer)[perm],
             torch.FloatTensor(self.done_buffer)[perm],
         )
-
 
 
 class SimpleEstimator(nn.Module):
@@ -121,11 +120,20 @@ class SimpleEstimator(nn.Module):
         )
 
     def forward(self, obs: torch.FloatTensor):
+        obs = obs.view(obs.shape[0], -1)
         return self.predict(obs)
 
 
 class Conv1dEstimator(nn.Module):
-    def __init__(self, action_dim: int, obs_size: int, hidden_size: int, in_channels : int, out_channels : int, kernel_size : int):
+    def __init__(
+        self,
+        action_dim: int,
+        obs_size: int,
+        hidden_size: int,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+    ):
         super(Conv1dEstimator, self).__init__()
         self.action_dim = action_dim
         self.obs_size = obs_size
@@ -135,18 +143,18 @@ class Conv1dEstimator(nn.Module):
         self.out_channels = out_channels
         self.kernel_size = kernel_size
         self.max_pool_kernel = 2
-        self.conv_output = self.obs_size 
-        #self.conv_out = 928
-        self.conv_out = 32
+        self.conv_output = self.obs_size
+        self.conv_out = 64
         self.conv_predict = nn.Sequential(
             nn.Conv1d(self.in_channels, self.out_channels, self.kernel_size),
             nn.MaxPool1d(self.max_pool_kernel),
             nn.ReLU(),
-            nn.Conv1d(self.out_channels, self.out_channels, self.kernel_size),
+            nn.Conv1d(self.out_channels, self.out_channels * 2, self.kernel_size),
             nn.MaxPool2d(self.max_pool_kernel),
-            nn.ReLU())
+            nn.ReLU(),
+        )
         self.linear_predict = nn.Sequential(
-            nn.Linear(self.conv_out , self.hidden_size),
+            nn.Linear(self.conv_out, self.hidden_size),
             nn.ReLU(),
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.ReLU(),
@@ -159,138 +167,56 @@ class Conv1dEstimator(nn.Module):
         return self.linear_predict(x)
 
 
-# def train_ddqn(
-#     env: gym.Env,
-#     valid_actions: list,
-#     q_est: nn.Module,
-#     q_target: nn.Module,
-#     num_frames: int,
-#     batch_size: int = 4096,
-#     gamma: float = 0.9,
-#     buffer_size: int = 100000,
-# ) -> list:
-#     """
-#     Train q_est with on gym env for num_frames iterations
-#     TODO: get rid of q_target argument
-#     TODO: add optim as arg
-#     """
-    
-#     rb = ReplayBuffer(buffer_size)
-#     epsilon = 1.0
-#     observation = env.reset()
-#     criterion = nn.MSELoss()
-#     losses = []
-#     optimizer = optim.Adam(q_est.parameters(), lr=0.0001)
-#     min_loss = 100.0
-#     for frame in range(num_frames):
-#         # Sample from environment!
-#         torchy_obs = torch.FloatTensor(observation).unsqueeze(0)
-#         if random() < epsilon:
-#             action = env.action_space.sample()
-#         else:
-#             pred = q_est(torchy_obs)
-#             action = int(pred.argmax())
-#         observation_prime, reward, done, info = env.step(action)
-#         rb.add(observation, action, observation_prime, reward, (1.0 if done else 0.0))
-#         if done:
-#             observation = env.reset()
-#         else:
-#             observation = observation_prime
-#         if epsilon > 0.05:
-#             epsilon -= 0.95 / 500000
-
-#         # Train the beast
-#         if (frame + 1) % batch_size == 0:
-#             start_training = time.time()
-#             q_est.zero_grad()
-
-#             # Sample the things you need from the buffer!
-#             obs, actions, obs_p, rews, done = rb.sample(batch_size)
-
-#             # Choose the argmax of actions from obs_prime
-#             q_vals_mat = q_est(obs_p, valid_actions[0])
-#             max_actions = valid_actions[0]
-#             for action in valid_actions[1:]:
-#                 q_vals_mat = torch.cat((q_vals_mat, q_est(obs_p, action)), dim=1)
-#             max_actions = torch.argmax(q_vals_mat, 1)
-
-#             # Find MSE between target and network
-#             target = rews.unsqueeze(1) + (1 - done.unsqueeze(1)) * gamma * q_target(
-#                 obs_p, max_actions
-#             )
-#             prediction = q_est(obs, actions)
-#             loss = criterion(target, prediction)
-#             losses.append(float(loss))
-#             if float(loss) < min_loss:
-#                 torch.save(q_est, "best_so_far.pt")
-#             loss.backward()
-#             optimizer.step()
-#             end_training = time.time
-#             print(end_training - start_training)
-#         # Update target every 10000 steps, can do moving avg later
-#         if (frame + 1) % 10000 == 0:
-#             print("Running a test trajectory...")
-#             test_done = False
-#             test_observation = env.reset()
-#             running_reward = 0
-#             while not test_done:
-#                 torchy_obs = torch.FloatTensor(test_observation).unsqueeze(0)
-#                 pred = q_trained(torchy_obs)
-#                 max_val = pred[0].max()
-#                 action = pred[0].argmax().numpy()
-#                 test_observation, reward, done, info = env.step(action)
-#                 running_reward += reward
-#                 if done:
-#                     observation = env.reset()
-#                     print("Test Trajectory had cumulative reward: ", running_reward)
-#             print("Copying over at iter: ", frame, "with loss: ", loss)
-
-#             q_target = copy.deepcopy(q_est)
-#             for p in q_target.parameters():
-#                 p.requires_grad = False
-#     env.close()
-#     return losses
-
-
-def flatten_deque(deque_to_flatten : deque) -> list:
+def flatten_deque(deque_to_flatten: deque) -> list:
     flattened = []
     for e in deque_to_flatten:
         flattened.extend(e)
     return flattened
 
+
 def train_ddqn_and_gan(
     env: gym.Env,
-    valid_actions: list,
     q_est: nn.Module,
     q_target: nn.Module,
     gan: nn.Module,
     optimizer: optim,
     num_frames: int,
-    consecutive_observations = 4,
+    consecutive_observations=4,
     batch_size: int = 4096,
     gamma: float = 0.9,
     buffer_size: int = 100000,
-    epsilon_start : float = 1
+    epsilon_start: float = 1,
+    rewards_tracking: list = [],
+    ddqn_losses: list = [],
+    generator_losses: list = [],
+    discriminator_losses: list = [],
 ):
     # TODO: Fix typing in file
     # TODO: Note: this probably isn't the right place for this function
     rb = ReplayBuffer(buffer_size)
+    # alpha = 0.999 # For slow changing target network
     epsilon = epsilon_start
     observation = env.reset()
     criterion = nn.MSELoss()
-    ddqn_losses = []
-    generator_losses = []
-    discriminator_losses = []
-    min_loss = 100.0
+    reward_tracking = 0
+    max_reward_so_far = 0
     id_ses = []
     ood_ses = []
-    obs_list = deque([observation for i in range(consecutive_observations)],consecutive_observations)
-    obs_p_list = deque([observation for i in range(consecutive_observations)],consecutive_observations)
+    loss = None
+    num_trajectories = 0
+    obs_list = deque(
+        [observation for i in range(consecutive_observations)], consecutive_observations
+    )
+    obs_p_list = deque(
+        [observation for i in range(consecutive_observations)], consecutive_observations
+    )
     freeze_generator = False
     # Initialize trajectory tracking
     trajectory = Trajectory(gamma)
     frames_since_accuracy_check = 0
     for frame in range(num_frames):
+        # for t_param, e_param in zip(q_target.parameters(), q_est.parameters()):
+        #     t_param.data = alpha * t_param.data + (1 - alpha) * e_param.data
         frames_since_accuracy_check += 1
         # Sample from environment!
         obs_list.append(observation)
@@ -301,21 +227,26 @@ def train_ddqn_and_gan(
         else:
             pred = q_est(torchy_obs)
             max_val = pred.max()
-            action = int(pred.argmax())
+            action = int(torch.argmax(pred[0]))
         observation_prime, reward, done, info = env.step(action)
-        
+        reward_tracking += reward
         obs_p_list.append(observation_prime)
         trajectory.add(
-            obs_list,
-            action,
-            obs_p_list,
-            reward,
-            (1.0 if done else 0.0),
-            max_val,
+            obs_list, action, obs_p_list, reward, (1.0 if done else 0.0), max_val
         )
+        # rb.add(
+        #     obs_list,
+        #     action,
+        #     obs_p_list,
+        #     reward,
+        #     (1.0 if done else 0.0),
+        # )
 
         if done:
+            num_trajectories += 1
             rb.add_trajectory(trajectory)
+            rewards_tracking.append(reward_tracking)
+            reward_tracking = 0
             # Measure/record accuracy stuff here
             # if frames_since_accuracy_check > 500:
             #     frames_since_accuracy_check = 0
@@ -335,24 +266,38 @@ def train_ddqn_and_gan(
             observation = env.reset()
         else:
             observation = observation_prime
-        if epsilon > 0.02:
-            epsilon -= 0.98 / 100000
+        if epsilon > 0.05:
+            epsilon -= 0.95 / 100000
 
         # Training time
-        if (frame + 1) % batch_size == 0 and frame > 2 * batch_size and rb.length > 0:
-            #start = time.time()
+        if (frame + 1) % batch_size == 0 and frame > buffer_size // 2 and rb.length > 0:
+            # start = time.time()
             q_est.zero_grad()
+            if rewards_tracking[-1] > max_reward_so_far:
+                max_reward_so_far = rewards_tracking[-1]
+                torch.save(q_est, "best_model_yet.pt")
             # Sample the things you need from the buffer!
             obs, actions, obs_p, rews, done = rb.sample(batch_size)
-
             # TRAIN THE GAN <('_'<)
             generator_loss, discriminator_loss = train_gan(
-                gan, obs.unsqueeze(0), 1, train_noise=0.05, freeze_generator=freeze_generator
+                gan,
+                obs.unsqueeze(0),
+                1,
+                train_noise=0.05,
+                freeze_generator=freeze_generator,
             )
             generator_losses.extend(generator_loss)
             discriminator_losses.extend(discriminator_loss)
             freeze_generator = not freeze_generator
+
+            # DQN CODE
             # Choose the argmax of actions from obs_prime
+            # q_est_vals = q_est(obs)
+            # prediction = q_est(obs).gather(1, actions.unsqueeze(1)).squeeze(1)
+            # q_target_pred, _ = torch.max(q_target(obs_p), 1)
+            # target = rews + (1 - done) * gamma * q_target_pred
+            # loss = criterion(target, prediction)
+            # DDQN CODE
             q_vals_mat = q_est(obs_p)
             max_actions = torch.argmax(q_vals_mat, 1)
             # Find MSE between target and network
@@ -361,37 +306,37 @@ def train_ddqn_and_gan(
             prediction = q_est(obs).gather(1, actions.unsqueeze(1))
             loss = criterion(target, prediction)
             ddqn_losses.append(float(loss))
-            #if float(loss) < min_loss:
-                #torch.save(q_est, "best_so_far.pt")
             loss.backward()
             optimizer.step()
-            #end = time.time()
-            #print("Training time took: ", end - start)
         # Update target every 25000 steps, can do moving avg later
-        if (frame + 1) % 10000 == 0:
+        if (frame + 1) % 10000 == 0 and loss is not None:
             print("Copying over at iter: ", frame, "with loss: ", loss)
             print("Running a test trajectory...")
             test_done = False
             test_observation = env.reset()
-            test_obs_list = deque([test_observation for i in range(consecutive_observations)],consecutive_observations)
+            test_obs_list = deque(
+                [test_observation for i in range(consecutive_observations)],
+                consecutive_observations,
+            )
             running_reward = 0
             while not test_done:
                 test_obs_list.append(test_observation)
                 torchy_obs = torch.FloatTensor(test_obs_list).unsqueeze(0)
                 pred = q_est(torchy_obs)
                 max_val = pred[0].max()
-                action = pred[0].argmax().numpy()
+                action = torch.argmax(pred[0]).numpy()
                 test_observation, reward, test_done, info = env.step(action)
                 running_reward += reward
                 if test_done:
                     observation = env.reset()
                     print("Test Trajectory had cumulative reward: ", running_reward)
-            
+
             q_target = copy.deepcopy(q_est)
             for p in q_target.parameters():
                 p.requires_grad = False
     env.close()
     return (
+        rewards_tracking,
         ddqn_losses,
         generator_losses,
         discriminator_losses,
